@@ -1,0 +1,13 @@
+[Unit]
+Description=Python App Server
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/appserver
+ExecStart=/usr/bin/python3 /home/ubuntu/appserver/app_server.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
