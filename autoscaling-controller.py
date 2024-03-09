@@ -1,71 +1,87 @@
 import boto3
-from botocore.exceptions import NoCredentialsError, ClientError
 import time
 
-asu_id = '1222291070'
+
+asu_id = '1222291070'  # Replace with your actual ASU ID
 request_queue = f'{asu_id}-req-queue'
-asg_name = 'app-tier-asg'
+ami_id='ami-0e1b6db259f90d2a6'
+key_pair='CC_KeyPair'
+# Initialize the boto3 client and resource
+ec2_resource = boto3.resource('ec2', region_name='us-east-1')
+ec2_client = boto3.client('ec2', region_name='us-east-1')
+sqs_client = boto3.client('sqs', region_name='us-east-1')
 
-# Constants to define your SQS queue and ASG names
-SCALE_OUT_THRESHOLD = 50  # Threshold to increase the number of instances
-SCALE_IN_THRESHOLD = 10   # Threshold to decrease the number of instances
-MAX_INSTANCES = 20        # Maximum number of instances in the ASG
-INTERVAL = 5              # Run every 5 seconds
+# Your SQS queue URL
 
-def get_queue_length(sqs_client, queue_name):
-    try:
-        # Get the SQS queue URL
-        queue_url = sqs_client.get_queue_url(QueueName=queue_name)['QueueUrl']
-        # Get the number of messages in the queue
-        attributes = sqs_client.get_queue_attributes(
-            QueueUrl=queue_url, AttributeNames=['ApproximateNumberOfMessages'])
-        return int(attributes['Attributes']['ApproximateNumberOfMessages'])
-    except ClientError as e:
-        print(f"Error getting queue length: {e}")
-        return None
+queue_url = sqs_client.get_queue_url(QueueName=request_queue)['QueueUrl']
+# IAM instance profile ARN
+iam_instance_profile_arn = 'arn:aws:iam::665435622782:instance-profile/SQSandS3AccessEC2'
 
-def scale_out(asg_client, asg_name, desired_capacity):
-    try:
-        asg_client.set_desired_capacity(
-            AutoScalingGroupName=asg_name, DesiredCapacity=desired_capacity, HonorCooldown=True)
-        print(f"Scaling out: Set desired capacity to {desired_capacity}")
-    except ClientError as e:
-        print(f"Error scaling out: {e}")
+# List to keep track of created instance IDs
+instance_ids = []
 
-def scale_in(asg_client, asg_name, desired_capacity):
-    try:
-        asg_client.set_desired_capacity(
-            AutoScalingGroupName=asg_name, DesiredCapacity=desired_capacity, HonorCooldown=True)
-        print(f"Scaling in: Set desired capacity to {desired_capacity}")
-    except ClientError as e:
-        print(f"Error scaling in: {e}")
+# Function to generate the next instance name based on existing instances
+def generate_instance_name():
+    # Your logic to generate the instance name...
+    next_number = len(instance_ids)+1  # Example starting point
+    # Determine the next_number based on your existing instances logic
+    instance_name = f'app-tier-instance-{next_number}'
+    return instance_name
 
-def main_loop():
-    # Initialize boto3 clients
-    sqs_client = boto3.client('sqs', region_name='us-east-1')
-    asg_client = boto3.client('autoscaling', region_name='us-east-1')
+# Function to create an EC2 instance and attach IAM role
+def create_ec2_instance(iam_instance_profile_arn):
+    instance_name = generate_instance_name()
+    instance = ec2_resource.create_instances(
+        ImageId=ami_id,  # Update this to your AMI ID
+        MinCount=1,
+        MaxCount=1,
+        InstanceType='t2.micro',  # Update as per your requirement
+        KeyName=key_pair,  # Update this to your key pair
+        IamInstanceProfile={'Arn': iam_instance_profile_arn},
+        TagSpecifications=[
+            {'ResourceType': 'instance',
+             'Tags': [{'Key': 'Name', 'Value': instance_name}]}
+        ]
+    )[0]
+    print(f'Created EC2 Instance {instance.id} with name {instance_name}')
+    # Add the instance ID to the tracking list
+    instance_ids.append(instance.id)
 
+# Function to terminate the most recently created instance
+def terminate_ec2_instance():
+    if instance_ids:
+        # Get the most recent instance ID and attempt to terminate it
+        instance_id_to_terminate = instance_ids.pop()
+        ec2_resource.Instance(instance_id_to_terminate).terminate()
+        print(f'Terminating EC2 Instance {instance_id_to_terminate}')
+    else:
+        print('No instances to terminate.')
+
+# Function to check the queue length
+def check_queue_length(queue_url):
+    response = sqs_client.get_queue_attributes(
+        QueueUrl=queue_url,
+        AttributeNames=['ApproximateNumberOfMessages']
+    )
+    return int(response['Attributes']['ApproximateNumberOfMessages'])
+
+# Main function to monitor and scale
+def monitor_and_scale():
     while True:
-        try:
-            # Get current queue length
-            queue_length = get_queue_length(sqs_client, request_queue)
-            if queue_length is not None:
-                print(f"Current queue length: {queue_length}")
+        queue_length = check_queue_length(queue_url)
+        print(f'Queue length: {queue_length}')
+        if not queue_length:
+            while(instance_ids):
+                terminate_ec2_instance()
+        elif queue_length > 20:  # Example threshold for scaling up
+            print('High queue load detected, creating an EC2 instance...')
+            while(len(instance_ids)<20):
+                create_ec2_instance(iam_instance_profile_arn)                      
+        elif queue_length <= 20:
+            while(len(instance_ids)<queue_length):
+                create_ec2_instance(iam_instance_profile_arn)
+                
+        time.sleep(30)  # Adjust as necessary
 
-                # Check scaling policies
-                if queue_length > SCALE_OUT_THRESHOLD:
-                    # Scale out
-                    desired_capacity = min(MAX_INSTANCES, queue_length // SCALE_OUT_THRESHOLD)  # Calculate desired capacity
-                    scale_out(asg_client, asg_name, desired_capacity)
-                elif queue_length <= SCALE_IN_THRESHOLD:
-                    # Scale in
-                    desired_capacity = max(0, queue_length // SCALE_IN_THRESHOLD)  # Calculate desired capacity, ensure at least 1
-                    scale_in(asg_client, asg_name, desired_capacity)
-
-        except NoCredentialsError:
-            print("Error: AWS credentials not found.")
-
-        time.sleep(INTERVAL)  # Wait for 5 seconds before the next run
-
-if __name__ == "__main__":
-    main_loop()
+if __name__ == '__main__':
+    monitor_and_scale()

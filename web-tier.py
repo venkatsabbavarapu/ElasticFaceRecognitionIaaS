@@ -61,7 +61,7 @@ def handle_post():
     # Poll the response queue for the response with a timeout
     while True:
         # Check for timeout (1 minute)
-        if time.time() - start_time > 60:  # 60 seconds
+        if time.time() - start_time > 300:  # 300 seconds
             return make_response("Response timeout", 504)
 
         messages = sqs.receive_message(
