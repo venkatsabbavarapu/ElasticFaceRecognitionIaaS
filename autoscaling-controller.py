@@ -67,12 +67,16 @@ def check_queue_length(queue_url):
 
 # Main function to monitor and scale
 def monitor_and_scale():
+    empty_queue_checks=0
     while True:
         queue_length = check_queue_length(queue_url)
         print(f'Queue length: {queue_length}')
         if not queue_length:
-            while(instance_ids):
-                terminate_ec2_instance()
+            empty_queue_checks+=1
+            if(empty_queue_checks>=2):
+                while(instance_ids):
+                    terminate_ec2_instance()
+                empty_queue_checks=0
         elif queue_length > 20:  # Example threshold for scaling up
             print('High queue load detected, creating an EC2 instance...')
             while(len(instance_ids)<20):

@@ -87,9 +87,6 @@ def handle_post():
                     response = make_response(result, 200)
                     response.headers['Content-Type'] = 'text/plain'
                     return response
-        else:
-            # If no messages, wait for 5 seconds before polling again
-            time.sleep(5)
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
