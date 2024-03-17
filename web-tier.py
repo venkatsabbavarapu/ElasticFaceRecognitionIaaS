@@ -6,9 +6,15 @@ import io
 import boto3
 import uuid
 import json
-import time  # Import the time module
+import time
+import redis
+import logging  # Import logging module
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(filename='web-tier.log', level=logging.INFO,
+                    format='%(asctime)s %(levelname)s %(name)s %(threadName)s : %(message)s')
 
 # SQS setup
 sqs = boto3.client('sqs', region_name='us-east-1')
@@ -17,26 +23,33 @@ response_queue = '1222291070-resp-queue'
 request_queue_url = sqs.get_queue_url(QueueName=request_queue)['QueueUrl']
 response_queue_url = sqs.get_queue_url(QueueName=response_queue)['QueueUrl']
 
+# Redis setup
+r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)  # Connect to local Redis instance
+
 @app.route('/', methods=['POST'])
 def handle_post():
     if 'inputFile' not in request.files:
+        logging.error("No image file provided")
         return make_response("No image file provided", 400)
 
     image_file = request.files['inputFile']
     if image_file.filename == '':
+        logging.error("No selected file")
         return make_response("No selected file", 400)
 
+    logging.info("Processing file: %s", image_file.filename)
+    
     image_name = werkzeug.utils.secure_filename(image_file.filename).split('.')[0]
-    buffered = io.BytesIO()
-    image = Image.open(image_file)
-    image.save(buffered, format="JPEG")
-    image_bytes = buffered.getvalue()
-    image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+    
+    image_data=image_file.read()
+    
+    image_base64 = base64.b64encode(image_data).decode('utf-8')
     correlation_id = str(uuid.uuid4())
 
     message_body = json.dumps({
         'image_name': image_name,
-        'image_data': image_base64
+        'image_data': image_base64,
+        'correlation_id': correlation_id
     })
 
     # Send a message to the request queue
@@ -54,39 +67,28 @@ def handle_post():
             }
         }
     )
+    
+    logging.info("Message sent for image %s with correlation ID %s", image_name, correlation_id)
 
     # Start the timeout clock
     start_time = time.time()
 
-    # Poll the response queue for the response with a timeout
+    # Check the Redis store for the response with a timeout
     while True:
-        # Check for timeout (1 minute)
         if time.time() - start_time > 300:  # 300 seconds
+            logging.warning("Response timeout for correlation ID %s", correlation_id)
             return make_response("Response timeout", 504)
 
-        messages = sqs.receive_message(
-            QueueUrl=response_queue_url,
-            MaxNumberOfMessages=1,
-            WaitTimeSeconds=20,  # Long polling
-            MessageAttributeNames=['All']
-        )
-
-        if 'Messages' in messages:
-            for message in messages['Messages']:
-                if message['MessageAttributes'].get('CorrelationId', {}).get('StringValue', '') == correlation_id:
-                    # Process and return the response
-                    processing_result = json.loads(message['Body'])
-                    
-                    # Delete the message from the queue
-                    sqs.delete_message(
-                        QueueUrl=response_queue_url,
-                        ReceiptHandle=message['ReceiptHandle']
-                    )
-                    print(type(processing_result))
-                    result=f"{processing_result['image_name']}:{processing_result['processing_result']}"
-                    response = make_response(result, 200)
-                    response.headers['Content-Type'] = 'text/plain'
-                    return response
+        processing_result = r.get(correlation_id)
+        if processing_result:
+            processing_result = json.loads(processing_result)
+            result = f"{processing_result['image_name']}:{processing_result['processing_result']}"
+            response = make_response(result, 200)
+            response.headers['Content-Type'] = 'text/plain'
+            logging.info("Processing result retrieved for correlation ID %s", correlation_id)
+            return response
+        else:
+            time.sleep(1)  # Sleep briefly to avoid hammering Redis
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=True, host='0.0.0.0', port=8000, threaded=True)

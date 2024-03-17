@@ -6,7 +6,7 @@ After=network.target
 User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/appserver
-ExecStart=/usr/bin/python3 /home/ubuntu/appserver/app_server.py
+ExecStart=/usr/bin/python3 /home/ubuntu/appserver/app-tier.py
 Restart=always
 
 [Install]
