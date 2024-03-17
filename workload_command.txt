@@ -1,5 +1,0 @@
-python3 workload_generator.py \
-  --num_request 20 \
-  --url 'http://34.201.191.8:5000' \
-  --image_folder "/Users/venkatratnamsabbavarapu/CloudComputing/face_images_1000/" \
-  --prediction_file "/Users/venkatratnamsabbavarapu/CloudComputing/classification_results.csv"
